@@ -48,6 +48,42 @@ function buildConceptToSourcesMap(
   return conceptMap;
 }
 
+/** Extract filenames from changes matching a given status. */
+function filesByStatus(
+  changes: SourceChange[],
+  ...statuses: SourceChange["status"][]
+): Set<string> {
+  const statusSet = new Set(statuses);
+  return new Set(
+    changes.filter((c) => statusSet.has(c.status)).map((c) => c.file),
+  );
+}
+
+/**
+ * Collect co-contributors for a source's concepts, skipping files in the
+ * exclusion sets. Mutates `out` by adding newly discovered contributors.
+ */
+function collectSharedContributors(
+  sourceFile: string,
+  state: WikiState,
+  conceptMap: Map<string, string[]>,
+  excludeSets: Set<string>[],
+  out: Set<string>,
+): void {
+  const sourceEntry = state.sources[sourceFile];
+  if (!sourceEntry) return;
+
+  for (const slug of sourceEntry.concepts) {
+    const contributors = conceptMap.get(slug);
+    if (!contributors || contributors.length < 2) continue;
+
+    for (const contributor of contributors) {
+      const isExcluded = excludeSets.some((s) => s.has(contributor));
+      if (!isExcluded) out.add(contributor);
+    }
+  }
+}
+
 /**
  * Identify unchanged sources that need recompilation because they share
  * concepts with directly changed sources. This enables correct cross-source
@@ -67,40 +103,17 @@ export function findAffectedSources(
   state: WikiState,
   directChanges: SourceChange[],
 ): string[] {
-  const changedFiles = new Set(
-    directChanges
-      .filter((c) => c.status === "new" || c.status === "changed")
-      .map((c) => c.file),
-  );
-
-  // Deleted files must never be enqueued for recompilation — their source
-  // no longer exists on disk, so compileSource would fail reading it.
-  const deletedFiles = new Set(
-    directChanges
-      .filter((c) => c.status === "deleted")
-      .map((c) => c.file),
-  );
-
+  const changedFiles = filesByStatus(directChanges, "new", "changed");
+  const deletedFiles = filesByStatus(directChanges, "deleted");
   const conceptMap = buildConceptToSourcesMap(state.sources);
   const affected = new Set<string>();
 
   for (const changedFile of changedFiles) {
-    const sourceEntry = state.sources[changedFile];
-    if (!sourceEntry) continue;
-
-    for (const slug of sourceEntry.concepts) {
-      const contributors = conceptMap.get(slug);
-      if (!contributors || contributors.length < 2) continue;
-
-      for (const contributor of contributors) {
-        const skip = changedFiles.has(contributor)
-          || deletedFiles.has(contributor)
-          || affected.has(contributor);
-        if (!skip) {
-          affected.add(contributor);
-        }
-      }
-    }
+    collectSharedContributors(
+      changedFile, state, conceptMap,
+      [changedFiles, deletedFiles, affected],
+      affected,
+    );
   }
 
   return Array.from(affected);
@@ -189,6 +202,51 @@ export async function persistFrozenSlugs(
 }
 
 /**
+ * Collect concept slugs from extractions that were not in the source's
+ * previous concept list — these are "newly gained" concepts that
+ * findAffectedSources could not have matched pre-extraction.
+ */
+function collectFreshSlugs(
+  extractions: ExtractionResult[],
+  state: WikiState,
+): Set<string> {
+  const freshSlugs = new Set<string>();
+
+  for (const result of extractions) {
+    const oldConcepts = new Set(state.sources[result.sourceFile]?.concepts ?? []);
+    for (const c of result.concepts) {
+      const slug = slugify(c.concept);
+      if (!oldConcepts.has(slug)) freshSlugs.add(slug);
+    }
+  }
+
+  return freshSlugs;
+}
+
+/**
+ * Find unchanged sources that own any of the given slugs, excluding files
+ * present in the provided exclusion sets.
+ */
+function findSlugOwners(
+  slugs: Set<string>,
+  conceptMap: Map<string, string[]>,
+  excludeSets: Set<string>[],
+): string[] {
+  const affected = new Set<string>();
+
+  for (const slug of slugs) {
+    const owners = conceptMap.get(slug);
+    if (!owners) continue;
+    for (const owner of owners) {
+      const isExcluded = excludeSets.some((s) => s.has(owner));
+      if (!isExcluded) affected.add(owner);
+    }
+  }
+
+  return Array.from(affected);
+}
+
+/**
  * Post-extraction check for compiled sources whose freshly extracted concepts
  * overlap with unchanged sources not already in the batch. Covers two cases
  * that findAffectedSources (pre-extraction) cannot detect:
@@ -204,43 +262,12 @@ export function findLateAffectedSources(
   state: WikiState,
   allChanges: SourceChange[],
 ): string[] {
-  const compilingFiles = new Set(
-    allChanges
-      .filter((c) => c.status === "new" || c.status === "changed")
-      .map((c) => c.file),
-  );
-  const deletedFiles = new Set(
-    allChanges.filter((c) => c.status === "deleted").map((c) => c.file),
-  );
+  const compilingFiles = filesByStatus(allChanges, "new", "changed");
+  const deletedFiles = filesByStatus(allChanges, "deleted");
   const conceptMap = buildConceptToSourcesMap(state.sources);
+  const freshSlugs = collectFreshSlugs(extractions, state);
 
-  // Collect concept slugs from ALL extractions that weren't in the source's
-  // previous concept list. These are "newly gained" concepts that
-  // findAffectedSources couldn't have matched pre-extraction.
-  const freshSlugs = new Set<string>();
-  for (const result of extractions) {
-    const oldConcepts = new Set(state.sources[result.sourceFile]?.concepts ?? []);
-    for (const c of result.concepts) {
-      const slug = slugify(c.concept);
-      if (!oldConcepts.has(slug)) {
-        freshSlugs.add(slug);
-      }
-    }
-  }
-
-  // Find unchanged sources that own any of those freshly gained slugs.
-  const affected = new Set<string>();
-  for (const slug of freshSlugs) {
-    const owners = conceptMap.get(slug);
-    if (!owners) continue;
-    for (const owner of owners) {
-      if (!compilingFiles.has(owner) && !deletedFiles.has(owner)) {
-        affected.add(owner);
-      }
-    }
-  }
-
-  return Array.from(affected);
+  return findSlugOwners(freshSlugs, conceptMap, [compilingFiles, deletedFiles]);
 }
 
 /**

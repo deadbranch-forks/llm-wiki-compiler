@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdir, writeFile, readFile } from "fs/promises";
 import path from "path";
-import os from "os";
-import { buildFrontmatter } from "../src/utils/markdown.js";
-import { generateIndex } from "../src/compiler/indexgen.js";
 import { loadSelectedPages } from "../src/commands/query.js";
+import { makeTempRoot } from "./fixtures/temp-root.js";
+import { writePage } from "./fixtures/write-page.js";
+import { generateAndReadIndex } from "./fixtures/generate-and-read-index.js";
 
 /**
  * Integration test for the knowledge compounding loop.
@@ -17,30 +16,11 @@ import { loadSelectedPages } from "../src/commands/query.js";
  * actual pipeline, not reimplementations.
  */
 
-/** Create a temp wiki structure with concepts and queries dirs. */
-async function makeTempRoot(): Promise<string> {
-  const root = path.join(os.tmpdir(), `llmwiki-compound-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  await mkdir(path.join(root, "wiki/concepts"), { recursive: true });
-  await mkdir(path.join(root, "wiki/queries"), { recursive: true });
-  return root;
-}
-
-/** Write a wiki page with frontmatter. */
-async function writePage(
-  dir: string,
-  slug: string,
-  fields: Record<string, unknown>,
-  body: string,
-): Promise<void> {
-  const fm = buildFrontmatter(fields);
-  await writeFile(path.join(dir, `${slug}.md`), `${fm}\n\n${body}\n`);
-}
-
 describe("knowledge compounding loop", () => {
   let root: string;
 
   beforeEach(async () => {
-    root = await makeTempRoot();
+    root = await makeTempRoot("compound");
   });
 
   it("saved query appears in the index alongside concepts", async () => {
@@ -58,11 +38,8 @@ describe("knowledge compounding loop", () => {
       "Knowledge compilation uses LLMs to transform messy sources into structured wiki pages. See [[Knowledge Compilation]].",
     );
 
-    // Step 3: Regenerate the index (real function)
-    await generateIndex(root);
-
-    // Step 4: Verify the index includes both the concept and the saved query
-    const index = await readFile(path.join(root, "wiki/index.md"), "utf-8");
+    // Step 3+4: Regenerate the index and verify it includes both pages
+    const index = await generateAndReadIndex(root);
 
     expect(index).toContain("## Concepts");
     expect(index).toContain("[[Knowledge Compilation]]");
@@ -115,8 +92,7 @@ describe("knowledge compounding loop", () => {
       { title: "LLM", summary: "Large Language Models" },
       "LLMs are neural networks trained on text.",
     );
-    await generateIndex(root);
-    let index = await readFile(path.join(root, "wiki/index.md"), "utf-8");
+    let index = await generateAndReadIndex(root);
     expect(index).toContain("1 pages");
 
     // Round 2: User asks a question and saves it -> page count grows
@@ -125,8 +101,7 @@ describe("knowledge compounding loop", () => {
       { title: "What is an LLM?", type: "query", createdAt: "2026-04-05T00:00:00.000Z" },
       "An LLM is a large language model. See [[LLM]].",
     );
-    await generateIndex(root);
-    index = await readFile(path.join(root, "wiki/index.md"), "utf-8");
+    index = await generateAndReadIndex(root);
     expect(index).toContain("2 pages");
 
     // Verify the saved query is also retrievable
@@ -139,8 +114,7 @@ describe("knowledge compounding loop", () => {
       { title: "How are LLMs trained?", type: "query", createdAt: "2026-04-05T00:00:00.000Z" },
       "LLMs are trained on massive text corpora. See [[LLM]].",
     );
-    await generateIndex(root);
-    index = await readFile(path.join(root, "wiki/index.md"), "utf-8");
+    index = await generateAndReadIndex(root);
     expect(index).toContain("3 pages");
   });
 });

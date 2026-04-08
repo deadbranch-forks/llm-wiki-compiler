@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdir, writeFile, readFile, readdir } from "fs/promises";
+import { writeFile, readFile } from "fs/promises";
 import path from "path";
-import os from "os";
 import { buildFrontmatter, parseFrontmatter } from "../src/utils/markdown.js";
 import { summarizeAnswer } from "../src/commands/query.js";
+import { makeTempRoot } from "./fixtures/temp-root.js";
+import { generateAndReadIndex } from "./fixtures/generate-and-read-index.js";
 
 /**
  * Tests the query --save integration path end-to-end (without LLM calls).
@@ -14,14 +15,6 @@ import { summarizeAnswer } from "../src/commands/query.js";
  * 2. saveQueryPage writes a summary to frontmatter so the index entry has
  *    retrieval signal beyond just the title.
  */
-
-/** Create a temp wiki structure. */
-async function makeTempRoot(): Promise<string> {
-  const root = path.join(os.tmpdir(), `llmwiki-qsave-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  await mkdir(path.join(root, "wiki/concepts"), { recursive: true });
-  await mkdir(path.join(root, "wiki/queries"), { recursive: true });
-  return root;
-}
 
 describe("summarizeAnswer", () => {
   it("extracts the first sentence from an answer", () => {
@@ -53,7 +46,7 @@ describe("query --save integration", () => {
   let root: string;
 
   beforeEach(async () => {
-    root = await makeTempRoot();
+    root = await makeTempRoot("qsave");
   });
 
   it("saved query page includes summary in frontmatter", async () => {
@@ -82,8 +75,6 @@ describe("query --save integration", () => {
   });
 
   it("saved query summary appears in the index for retrieval", async () => {
-    const { generateIndex } = await import("../src/compiler/indexgen.js");
-
     // Write a concept page
     const conceptFm = buildFrontmatter({ title: "LLM", summary: "Large language models" });
     await writeFile(path.join(root, "wiki/concepts/llm.md"), `${conceptFm}\n\nLLMs are neural networks.\n`);
@@ -98,10 +89,7 @@ describe("query --save integration", () => {
     });
     await writeFile(path.join(root, "wiki/queries/what-is-an-llm.md"), `${queryFm}\n\n${answer}\n`);
 
-    // Generate the index
-    await generateIndex(root);
-
-    const index = await readFile(path.join(root, "wiki/index.md"), "utf-8");
+    const index = await generateAndReadIndex(root);
 
     // The index should have the query's summary as retrieval signal
     expect(index).toContain("## Saved Queries");
@@ -110,8 +98,6 @@ describe("query --save integration", () => {
   });
 
   it("saved query without summary produces blank entry (pre-fix behavior)", async () => {
-    const { generateIndex } = await import("../src/compiler/indexgen.js");
-
     // Write a saved query WITHOUT summary (the old bug)
     const noSummaryFm = buildFrontmatter({
       title: "What is backpropagation?",
@@ -123,8 +109,7 @@ describe("query --save integration", () => {
       `${noSummaryFm}\n\nBackprop computes gradients.\n`,
     );
 
-    await generateIndex(root);
-    const index = await readFile(path.join(root, "wiki/index.md"), "utf-8");
+    const index = await generateAndReadIndex(root);
 
     // Without summary, the index line has no retrieval context after the dash
     expect(index).toContain("[[What is backpropagation?]]");

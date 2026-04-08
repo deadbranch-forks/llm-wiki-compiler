@@ -76,35 +76,44 @@ function isWordBoundary(text: string, start: number, end: number): boolean {
   return before && after;
 }
 
+/** Find all regex matches for a title in the text, returned as position spans. */
+function findTitleMatches(text: string, title: string): { start: number; end: number }[] {
+  const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(escaped, "gi");
+  const matches: { start: number; end: number }[] = [];
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    matches.push({ start: match.index, end: match.index + match[0].length });
+  }
+
+  return matches;
+}
+
+/** Determine whether a match position is eligible for wikilink insertion. */
+function isLinkablePosition(text: string, start: number, end: number): boolean {
+  if (isInsideWikilink(text, start)) return false;
+  if (isInsideCitation(text, start)) return false;
+  return isWordBoundary(text, start, end);
+}
+
 /**
  * Add [[wikilinks]] to a page's body for any title mentions.
  * Skips already-linked text and non-word-boundary matches.
  */
 function addWikilinks(body: string, titles: PageInfo[], selfTitle: string): string {
   let result = body;
+  const selfLower = selfTitle.toLowerCase();
 
   for (const page of titles) {
-    if (page.title.toLowerCase() === selfTitle.toLowerCase()) continue;
+    if (page.title.toLowerCase() === selfLower) continue;
 
-    const escaped = page.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(escaped, "gi");
-    let match;
+    const matches = findTitleMatches(result, page.title);
 
     // Process matches in reverse to preserve positions
-    const matches: { start: number; end: number }[] = [];
-    while ((match = regex.exec(result)) !== null) {
-      matches.push({ start: match.index, end: match.index + match[0].length });
-    }
-
     for (const m of matches.reverse()) {
-      if (isInsideWikilink(result, m.start)) continue;
-      if (isInsideCitation(result, m.start)) continue;
-      if (!isWordBoundary(result, m.start, m.end)) continue;
-
-      result =
-        result.slice(0, m.start) +
-        `[[${page.title}]]` +
-        result.slice(m.end);
+      if (!isLinkablePosition(result, m.start, m.end)) continue;
+      result = result.slice(0, m.start) + `[[${page.title}]]` + result.slice(m.end);
     }
   }
 

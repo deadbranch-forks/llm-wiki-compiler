@@ -67,24 +67,17 @@ describe("resolveLinks", () => {
     expect(content).toContain("Betamax");
   });
 
-  it("skips wikilink resolution inside single citation markers", async () => {
-    await writePage("alpha", "Alpha", "Info here. ^[Beta Concept]");
+  it.each([
+    { label: "single citation", citation: "^[Beta Concept]" },
+    { label: "multi-source citation", citation: "^[a.md, Beta Concept]" },
+  ])("skips wikilink resolution inside $label markers", async ({ citation }) => {
+    await writePage("alpha", "Alpha", `Info here. ${citation}`);
     await writePage("beta", "Beta Concept", "About beta.");
 
     await resolveLinks(tmpDir, ["alpha"], []);
     const content = await readPage("alpha");
     expect(content).not.toContain("[[Beta Concept]]");
-    expect(content).toContain("^[Beta Concept]");
-  });
-
-  it("skips wikilink resolution inside multi-source citation markers", async () => {
-    await writePage("alpha", "Alpha", "Info here. ^[a.md, Beta Concept]");
-    await writePage("beta", "Beta Concept", "About beta.");
-
-    await resolveLinks(tmpDir, ["alpha"], []);
-    const content = await readPage("alpha");
-    expect(content).not.toContain("[[Beta Concept]]");
-    expect(content).toContain("^[a.md, Beta Concept]");
+    expect(content).toContain(citation);
   });
 
   it("adds inbound links for new titles", async () => {
